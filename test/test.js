@@ -188,8 +188,167 @@ describe('Game Rest Services Update', function() {
 
 // Game read tests
 // *****************************************************************************
+// syntax...............: /api/db/:{type}?{query}
+// method...............: GET
+// query parameters.....:	filter
+//												offset {int}
+//												limit {int}
+//												order by {column[;]}*
+//												order direction {asc|desc}
+// type.................: {VIEW|TABLE}
+// filter...............:	{"where|column|compare|[']value[']"[;]}{"operand|column|compare|[']value[']"[;]}*
+// operand..............: {and|or}
+// compare..............: {eq|in}
 describe('Game Rest Services Read', function() {
-  it('Get List of wront type', function(done) {
+	var path = "/api";
+  var path_falsch = "/apif"
+	var type = "game"
+	var type_falsch = "gamef"
+	var id_falsch = -1
+
+	// negativ url tests
+	// ---------------------------------------------------------------------------
+	/*it('wrong host', function(done) {
+    search_object(done,host_falsch,path,type,"",test = function(done,response) {
+      expect(response.toString()).to.equal(sprintf("Error: getaddrinfo ENOTFOUND %s %s",url_falsch,url_port_falsch));
+      done();
+    })
+  });
+
+  it('wrong path', function(done) {
+    search_object(done,host,path_falsch,type,"",test = function(done,response) {
+      expect(response.statusCode).to.equal(404);
+      done();
+    })
+  });
+
+	it('wrong type', function(done) {
+    search_object(done,host,path,type_falsch,"",test = function(done,response) {
+      expect(response.statusCode).to.equal(404);
+      done();
+    })
+  });*/
+
+	// offset tests
+	// ---------------------------------------------------------------------------
+	it('offset is negativ', function(done) {
+	});
+
+	it('offset is highter than the amount of data', function(done) {
+	});
+
+	it('Offset is not a number', function(done) {
+	});
+
+	// limit tests
+	// ---------------------------------------------------------------------------
+	it('limit is negativ', function(done) {
+	});
+
+	it('limit is 0', function(done) {
+	});
+
+	it('limit is highter than the amount of data', function(done) {
+	});
+
+	it('limit is not a number', function(done) {
+	});
+
+	it('limit + offset is hight than the amount of data', function(done) {
+	});
+
+	// order by tests
+	// ---------------------------------------------------------------------------
+	it('order by column does not exists', function(done) {
+	});
+
+	it('one order by column does not exists', function(done) {
+	});
+
+	it('order by column is used more than once', function(done) {
+	});
+
+	// order direction tests
+	// ---------------------------------------------------------------------------
+	it('only order direction, witout order', function(done) {
+	});
+
+	it('direction is neither asc nor desc', function(done) {
+	});
+
+	// filter tests
+	// ---------------------------------------------------------------------------
+	it('operand is empty', function(done) {
+	});
+
+	it('column is empty', function(done) {
+	});
+
+	it('compare is empty', function(done) {
+	});
+
+	it('value is empty', function(done) {
+	});
+
+	it("operand is neither 'where','and' nor 'or'", function(done) {
+	});
+
+	it("operand is 'and' or 'or' but it's the first filter", function(done) {
+	});
+
+	it("operand is 'where' but its not the first filter", function(done) {
+	});
+
+	it('column does not exists', function(done) {
+	});
+
+	it("compare is neither 'eq' nor 'in'", function(done) {
+	});
+
+	it('value is not the same type (string,int)', function(done) {
+	});
+
+	it('value is not the same type (int,string)', function(done) {
+	});
+
+	it("string value missing '", function(done) {
+	});
+
+	it('semicolon without another filter', function(done) {
+	});
+
+  // TODO: Cross Site Scripting
+
+	// positiv tests
+	// ---------------------------------------------------------------------------
+	it('filter is empty', function(done) {
+	});
+
+	it('one filter', function(done) {
+	});
+
+	it('two filters', function(done) {
+	});
+
+	it('offset only', function(done) {
+	});
+
+	it('limit only', function(done) {
+	});
+
+	it('offset and limit', function(done) {
+	});
+
+	it('order only', function(done) {
+	});
+
+	it('filter,offset,filter', function(done) {
+	});
+
+	it('filters,offset,filter,order', function(done) {
+	});
+
+	it('Get List of wront type', function(done) {
     chai
     .request(host)
     .get(path2+"f")
@@ -224,38 +383,6 @@ describe('Game Rest Services Read', function() {
       }
     });
   });
-
-  // List tests
-  // ***************************************************************************
-  // syntax....: /api/db/TYPE/OFFSET/LIMIT/PATTERN
-  // pattern...: {COLUMN|VALUE}*
-  // no pattern: "*"
-
-  // type tests
-  // ---------------------------------------------------------------------------
-  // type does not exist
-
-  // offset tests
-  // ---------------------------------------------------------------------------
-  // offset is negativ
-  // offset is highter than the amount of data
-  // Offset is not a number
-
-  // limit tests
-  // ---------------------------------------------------------------------------
-  // limit is negativ
-  // limit is highter than the amount of data
-  // limit is not a number
-  // limit + offset is hight than the amount of data
-
-  // filter tests
-  // ---------------------------------------------------------------------------
-  // filter has a type only
-  // filter has a value only
-  // filter has a | only
-  // filter has a correct tupple and a type only
-  // TODO: Cross Site Scripting
-  // filter has a COLUMN that does not exists
 
   // positiv test
   // ---------------------------------------------------------------------------
