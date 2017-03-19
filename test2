@@ -1,0 +1,38 @@
+700: DB Connection Error	code,errors
+800: validation errors 		code,errors
+900: DB Create Error		code,errors
+901: DB Update Error 		code,errors
+902: DB Select Error		code,errors
+903: DB Count Error		code,errors
+904: DB Delete Error		code,errors
+
+create 100
+update 200
+200 Object Id:%id not found in %type 	code,errors
+
+delete 300
+300 Object type unkown
+301 FK relations to object exist
+302 Object not found
+
+read 400
+400 Offset is negativ
+401: Offset is not a number
+402: Limit is 0
+403: Limit is negativ
+404: Limit is not a number
+405: Filter inclomplete
+406: First filter must start with 'where'
+407: Only the operand of the first filter coule be name 'where'
+408: Operand unknwon
+409: Column empty
+410: Comparer unknown
+411: Value empty
+412: Offset is higher than the amount of data
+413: Offset + limit out of rage
+414: Object type unknown
+415: Object not found
+
+
+
+

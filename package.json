@@ -13,6 +13,8 @@
     "express": "^4.14.0",
     "express-myconnection": "^1.0.4",
     "express-validator": "^2.20.8",
+    "mocha": "^3.2.0",
+    "mocha-as-promised": "^2.0.0",
     "multer": "^1.2.0",
     "mysql": "^2.11.1",
     "sprintf": "^0.1.5",

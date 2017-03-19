@@ -1,22 +1,12 @@
-/** 2657
- * This file provided by Facebook is for non-commercial testing and evaluation
- * purposes only. Facebook reserves all rights not expressly granted.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * FACEBOOK BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
- * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
+/** 2657 */
 
 // requirements
 // =============================================================================
 var fs = require("fs");
-var file = "kautschbank.sqlite";
+var db_file = "kautschbank2.sqlite";
 var exists = fs.existsSync(file);
 var sqlite3 = require("sqlite3").verbose();
-var db = new sqlite3.Database(file);
+var db = new sqlite3.Database(db_file);
 
 var winston = require('winston');
 var path = require('path');
@@ -40,10 +30,33 @@ var mysql = require('mysql');
 // =============================================================================
 var COMMENTS_FILE = path.join(__dirname, 'comments.json');
 
-/*db.each("SELECT * FROM KTag", function(err, row) {
-  console.log( row.UID);
-});*/
+var tablename2objectuids = []
+db.each("SELECT * FROM KObjectUID", function(err, row) {
+  tablename2objectuids[row.TableName] = row.ObjectUID;
+});
 
+var dbID = ""
+db.each("SELECT KautschInstallationUID FROM KConfiguration where uid='000001:0001:000001'", function(err, row) {
+  dbID= row.KautschInstallationUID;
+});
+
+
+// error handling
+// =============================================================================
+function KError(errno,errors) {
+  this.name = errno;
+  this.errors = errors;
+}
+KError.prototype = Error.prototype;
+
+// Utils
+// =============================================================================
+// replace all
+// *****************************************************************************
+String.prototype.replaceAll = function(search, replacement) {
+    var target = this;
+    return target.replace(new RegExp(search, 'g'), replacement);
+};
 
 // logging configuration
 // =============================================================================
@@ -92,7 +105,7 @@ var logAccess = winston.loggers.get('logAccess')
 //app.set('views','./views');
 //app.set('view engine','ejs');
 
-app.set('port', (process.env.PORT || 3000));
+app.set('port', (process.env.PORT || 3300));
 
 app.use('/', express.static(path.join(__dirname, 'public')));
 app.use(bodyParser.json());
@@ -105,6 +118,10 @@ app.use(function(req, res, next) {
     // Set permissive CORS header - this allows this server to be used only as
     // an API server in conjunction with something like webpack-dev-server.
     res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers','Content-Type');
+
+    // Request methods you wish to allow
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
 
     // Disable caching so we'll always get the latest comments.
     res.setHeader('Cache-Control', 'no-cache');
@@ -141,296 +158,893 @@ router.use(function(req, res, next) {
     next();
 });
 
+// general output codes
+// =============================================================================
+// 700: DB Connection Error
+// 800: validation errors
+// 900: DB Create Error
+// 901: DB Update Error
+// 902: DB Select Error
+// 903: DB Count Error
+// 904: DB Delete Error
 // =============================================================================
 // Utilities
 // =============================================================================
-// general search
-// *****************************************************************************
-var kautschSearch = function(req,res,next,tablename) {
-  var filter = '';
-  var pattern = '';
-  var where = '';
-
-  if(!(req.params.filters == '-')) {
-    var filters = req.params.filters.split("|");
-
-    for(i=0;i<filters.length;i+=2) {
-      if(i>0) {
-        filter+= ' and ';
-      }
-      filter += filters[i*2] + "='" + filters[i*2+1] + "'";
-      console.log(filter);
-    }
-  }
-  if(!(req.params.patterns == '-')) {
-    var patterns = req.params.patterns.split("|");
-
-    for(i=0;i<patterns.length;i+=2) {
-      if(i>0 || !(req.params.filters == '-')) {
-        pattern+= ' and ';
-      }
-      pattern += patterns[i*2] + " like '%" + patterns[i*2+1] + "%'";
-      console.log(pattern);
-    }
-  }
-
-  if(!(filter == '' && pattern == '')) {
-    where = 'where';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query(sprintf("SELECT * FROM %s %s %s %s",tablename,where,filter,pattern),function(err,rows){
-        if(err){
-            console.log(err);
-            return next("Database error, check your query");
-        }
-
-        //if user not found
-        if(rows.length < 1) {
-          return res.json({'msg':'tag not found'});
-        }
-        console.log(rows);
-        res.json(rows);
-      });
-    }
-  });
-};
-
 // general validation
+// *****************************************************************************
+// output(error case):
+// -------------------
+// code:      800: validation error(s)
+// errors:    errors
 // *****************************************************************************
 var general_validation = function(req,res,next) {
   var errors = req.validationErrors();
   if(errors){
-    logError.error("422: " + errors)
+    var logmsg = ""
+    for (var key in errors) {
+      console.log(key)
+      console.log(errors[key])
+      logmsg += "param:"+errors[key]["param"]+","+"msg:"+errors[key]["msg"]+","+"param:"+errors[key]["value"]+";"
+    }
+
+    console.log(errors)
+    logError.error(sprintf("800: validation error(s):%s",logmsg))
     res.status(422)
-    res.json({"status":800,'id':null,"errors":errors});
+    res.json({"code":800,"errors":errors});
     return false
   }
   return true
 }
 
+function pad(num, size) {
+    var s = num+"";
+    while (s.length < size) s = "0" + s;
+    return s;
+}
+
 // general CREATE
 // *****************************************************************************
+// output:
+// -------
+// code:      0:    ok, object created
+//            118:  no such column
+// id:        not present | new id of object that was created
+// uid:       not present | new uid of object that was created
+// errors:    errors
+// *****************************************************************************
 var general_create = function(req,res,tablename,data) {
+  var _columns = "(UID,"
+  var _values = "(-1,"
+
+  for (var key in data) {
+    _columns += key + ","
+    if(typeof data[key] == "string") {
+      _values += "'" + data[key] + "',"
+    } else {
+      _values += data[key] + ","
+    }
+  }
+
+  _columns = _columns.substring(0,_columns.length-1)+")"
+  _values = _values.substring(0,_values.length-1)+")"
+
+  //Perform INSERT operation.
+  query_string = "INSERT into " + tablename + " " + _columns + " VALUES " + _values
+  console.log(query_string)
+
+  db.run(query_string,function(err) {
+    try {
+      if(err) {
+        console.log(err.message.substring(0,28))
+        if(err.message.substring(0,28)=="SQLITE_ERROR: no such column") {
+          throw new KError("118",err)
+        } else {
+          throw new KError("900",err)
+        }
+      }
+
+      _uid = dbID + ":" + tablename2objectuids[tablename] + ":" + pad(this.lastID.toString(),6);
+      query_update_string = "UPDATE " + tablename + " SET uid='" + _uid + "' where rowid=" + this.lastID
+      console.log(query_update_string)
+
+      db.run(query_update_string,function(err) {
+        try {
+          if(err) {
+            throw new Error("901: db update error")
+          }
+          res.status(200);
+          res.json({'code':0,'id':this.lastID,'uid':_uid,'errors':undefined});
+          logAccess.debug("200: " + query_string)
+          return
+        } catch(err) {
+          switch(err.name) {
+            case "901": {
+              res.status(500)
+              res.json({'code':901,'errors':err.errors})
+              logError.error("901: db update error:" + err.errors)
+              return
+            }
+            default: {
+              res.status(500)
+              res.json({'code':700,'errors':err.errors})
+              logError.error("700: db connection error:" + err.errors)
+              return
+            }
+          }
+        }
+      });
+    } catch(err) {
+      console.log("heir"+err.name)
+      switch(err.name) {
+        case "118": {
+          res.status(400)
+          res.json({'code':118,'errors':err})
+          logError.warn("118: Unknown column")
+          return
+        }
+        case "900": {
+          res.status(500)
+          res.json({'code':900,'errors':err.errors})
+          logError.error("900: db create error:" + err.errors)
+          return
+        }
+        default: {
+          res.status(500)
+          res.json({'code':700,'errors':err.errors})
+          logError.error("700: db connection error:" + err.errors)
+          return
+        }
+      }
+    };
+  });
+
+  /* MySQL
+     -----
   req.getConnection(function (err, conn){
     if (err) {
-      logError.error("5001: " + err)
       res.status(500)
-      res.json({'status':5001,id:null,'errors':err})
+      res.json({'code':700,'errors':err})
+      logError.error("700: db connection error:" + err)
       return
     } else {
       var query_string =sprintf("INSERT INTO %s set ?",tablename);
       var query = conn.query(query_string,data, function(err, result){
         if(err){
           res.status(500)
-          res.json({'status':900,'id':null,'errors':err})
-          logError.error("500: " + err)
+          res.json({'code':900,'errors':err})
+          logError.error("900: db create error:" + err)
         };
+
         res.status(200);
-        res.json({'status':0,'id':result.insertId,'errors':null});
+        res.json({'code':0,'id':result.insertId,'errors':undefined});
+        logAccess.debug("200: " + query_string)
       });
     }
-  });
-}
+  }); */
+};
 
 // general UPDATE
 // *****************************************************************************
-var general_update = function(req,res,tablename,data,id) {
+// Perform update operation.
+// *****************************************************************************
+// output:
+// -------
+// code:      0:    ok, object updated
+//            200:  Object Id:%id not found in %type
+//            214:  No such table
+//            218:  No such column
+// errors:    errors
+// *****************************************************************************
+var general_update = function(req,res,tablename,data,uid) {
+  var _sets = " "
+
+  for (var key in data) {
+    _sets += key + "="
+    if(typeof data[key] == "string") {
+      _sets += "'" + data[key] + "',"
+    } else {
+      _sets += data[key] + ","
+    }
+  }
+
+  _sets = _sets.substring(0,_sets.length-1)
+
+  query_updatestring = "UPDATE " + tablename + " SET " + _sets + " where uid=" + uid
+  console.log(query_updatestring)
+  db.run(query_updatestring,function(err) {
+    try {
+      if(err) {
+        console.log(err.message.substring(0,28))
+        if(err.message.substring(0,27)=="SQLITE_ERROR: no such table") {
+          throw new KError("214",err)
+        } else if(err.message.substring(0,28)=="SQLITE_ERROR: no such column") {
+          throw new KError("218",err)
+        } else {
+          throw new KError("901",err)
+        }
+      }
+
+      _uid = dbID + ":" + tablename2objectuids[tablename] + ":" + pad(this.lastID.toString(),6);
+
+      if(this.changes == 0) {
+        res.status(400);
+        res.json({'code':200,'errors':null})
+        logError.warn(sprintf("200: Object uid:%s not found in %s:",uid,tablename))
+        return;
+      }
+
+      res.status(200);
+      res.json({'code':0,'errors':undefined});
+      logAccess.debug("200: " + query_updatestring)
+    } catch(err) {
+      console.log("heir"+err.name)
+      switch(err.name) {
+        case "318": {
+          res.status(400)
+          res.json({'code':218,'errors':err})
+          logError.warn("218: Unknown column")
+          return
+        }
+        case "314": {
+          res.status(400)
+          res.json({'code':214,'errors':err})
+          logError.warn("214: Unknown type")
+          return
+        }
+        case "901": {
+          res.status(500)
+          res.json({'code':901,'errors':err.errors})
+          logError.error("901: db update error:" + err.errors)
+          return
+        }
+        default: {
+          res.status(500)
+          res.json({'code':700,'errors':err.errors})
+          logError.error("700: db connection error:" + err.errors)
+          return
+        }
+      }
+    }
+  });
+
+
+  /* MySQL
+    ------
   req.getConnection(function (err, conn){
     if (err) {
       res.status(500)
-      res.json({'status':5001,'errors':err})
-      logError.error("500: " + err)
+      res.json({'code':700,'errors':err})
+      logError.error("700: db connection error:" + err)
       return
     }
     var query_string = sprintf("UPDATE %s SET ? WHERE id=%s",tablename,id)
     var query = conn.query(query_string,[data], function(err, rows){
       if(err){
         res.status(500)
-        res.json({'status':900,'errors':err})
-        logError.error("500: " + err)
+        res.json({'code':901,'errors':err})
+        logError.error("901: db update error:" + err)
         return
       };
       if(rows.affectedRows == 0) {
-        logError.warn(sprintf("400: Object id:%s not found in %s:",id,tablename))
         res.status(400);
-        res.json({'status':1,'errors':null})
+        res.json({'code':200,'errors':null})
+        logError.warn(sprintf("200: Object id:%s not found in %s:",id,tablename))
         return;
       }
       res.status(200);
-      res.json({'status':0,'errors':null})
+      res.json({'code':0,'errors':undefined})
+      logAccess.debug("200: " + query_string)
     });
-  });
+  });*/
 }
 
-
-// generic router
+// generic search router
 // =============================================================================
-var database = router.route('/db/:type')
+var database_search = router.route('/db/search/:type')
 
 // generic get list
 // *****************************************************************************
 // output:
 // -------
-// status:  0: ok, object found
-//          2: object type unknown
+// status:    0:    ok, object found
+//            400:  Offset is negativ
+//            401:  Offset is not a number
+//            402:  Limit is 0
+//            403:  Limit is negativ
+//            404:  Limit is not a number
+//            405:  Filter inclomplete
+//            406:  First filter must start with 'where'
+//            407:  Only the operand of the first filter coule be name 'where'
+//            408:  Operand unknwon
+//            409:  Column empty
+//            410:  Comparer unknown
+//            411:  Value empty
+//            412:  Offset is higher than the amount of data
+  //            413:  Offset + limit out of rage
+//            414:  Object type unknown
+//            417:  Order direction without order by
+//            418:  Unkonwn column in filter
+// amount':   number of rows
+// data:      data (rows)
+// errors:    errors
 // *****************************************************************************
-database.get(function(req,res,next){
-  var type = req.params.type
+database_search.get(function(req,res,next){
+  var db_type = req.params.type
+  var db_offset = ""
 
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
+  // offset
+  // ---------------------------------------------------------------------------
+  if(req.query.offset != undefined) {
+    var temp_offset = parseInt(req.query.offset)
+    db_offset = "offset " + req.query.offset
+
+    if(temp_offset<0) {
+      res.status(400)
+      res.json({'code':400,'errors':undefined})
+      logError.warn("400: Offset is negativ:" + temp_offset)
       return
-    } else {
-      var query_string = sprintf("SELECT * FROM %s",type)
-      var query = conn.query(query_string,function(err,rows){
-        if(err){
-          if(err.errno==1146) {
-            logError.warn("400: Object type unknown:" + query_string)
-            res.status(400)
-            res.json({'status':2})
-          } else {
-            res.status(500)
-            logError.error("500: " + err)
-          }
-          return;
-        }
+    };
+    if(temp_offset % 1 != 0) {
+      res.status(400)
+      res.json({'code':401,'errors':undefined})
+      logError.warn("401: Offset is not a number:" + temp_offset)
+      return
+    };
+  }
 
-        logAccess.debug("200: " + query_string)
-        res.status(200)
-        res.json(rows)
+  // limit
+  // ---------------------------------------------------------------------------
+  var db_limit = ""
+  if(req.query.limit != undefined) {
+    var temp_limit = parseInt(req.query.limit)
+
+    if(temp_limit==0) {
+      res.status(400)
+      res.json({'code':402,'errors':undefined})
+      logError.warn("402: Limit is 0")
+      return
+    };
+
+    if(temp_limit<0) {
+      res.status(400)
+      res.json({'code':403,'errors':undefined})
+      logError.warn("403: Limit is negativ:" + temp_limit)
+      return
+    };
+
+    if(temp_limit % 1 != 0) {
+      res.status(400)
+      res.json({'code':404,'errors':undefined})
+      logError.warn("404: Limit is not a number:" + temp_limit)
+      return
+    };
+
+    db_limit = "limit " + req.query.limit
+  }
+
+  // order by
+  // ---------------------------------------------------------------------------
+  var db_orderby = ""
+  if(req.query.orderby != undefined) {
+    db_orderby = "order by " + req.query.orderby
+  }
+
+  // order_direction
+  // ---------------------------------------------------------------------------
+  var db_order_direction = ""
+  if(req.query.order_direction != undefined) {
+    db_order_direction = req.query.order_direction
+
+    if(db_orderby == "") {
+      res.status(400)
+      res.json({'code':417,'errors':undefined})
+      logError.warn(sprintf("417: Order direction:%s without order by",db_order_direction))
+      return
+    }
+  }
+
+  // filters
+  // ---------------------------------------------------------------------------
+  var temp_filters = []
+  var db_filter = ""
+  var db_operand = ""
+  var db_column = ""
+  var db_compare = ""
+  var db_value = ""
+  var temp_rows = undefined
+  var temp_filters = undefined
+  var temp_first = undefined
+
+  if(req.query.filter != undefined) {
+    console.log("filter:"+req.query.filter)
+    temp_filters = req.query.filter.split(";")
+
+    temp_first = true
+
+    for (let entry of temp_filters) {
+      temp_filter = entry.split("|")
+
+      if(temp_filter.length != 4) {
+        res.status(400)
+        console.log(temp_filter)
+        res.json({'code':405,'errors':undefined})
+        logError.warn("405: Filter incomplete:" + req.query.filter)
+        return
+      }
+
+      if(temp_filter[0] == "and" || temp_filter[0] == "or" || temp_filter[0] == "where") {
+        if(temp_filter[0] != "where" && temp_first == true) {
+          res.status(400)
+          res.json({'code':406,'errors':undefined})
+          logError.warn("406: First filter must start with 'where':" + req.query.filter)
+          return
+        }
+        if(temp_filter[0] == "where" && temp_first == false) {
+          res.status(400)
+          res.json({'code':407,'errors':undefined})
+          logError.warn("407: Only the operand of the first filter could be named 'where':" + req.query.filter)
+          return
+        }
+        db_operand = temp_filter[0]
+      } else {
+        res.status(400)
+        res.json({'code':408,'errors':undefined})
+        logError.warn("408: Operand unknown:" + temp_filter[0])
+        return
+      }
+
+      if(temp_filter[1] != "") {
+        db_column = temp_filter[1]
+      } else {
+        res.status(400)
+        res.json({'code':409,'errors':undefined})
+        logError.warn("409: Column empty")
+        return
+      }
+
+      console.log(temp_filter[2])
+      if(temp_filter[2] == 'eq') {
+        db_compare = "="
+      } else if (temp_filter[2] == 'like'){
+        db_compare = "like"
+      } else {
+        logError.warn("410: Comparer unknwon:" + temp_filter[2])
+        res.status(400)
+        res.json({'code':410,'errors':undefined})
+        return
+      }
+
+      if(temp_filter[3] != "") {
+        if(db_compare == 'like') {
+          db_value = temp_filter[3].replaceAll("°","%")
+        } else {
+          db_value = temp_filter[3]
+        }
+      } else {
+        res.status(400)
+        res.json({'code':411,'errors':undefined})
+        logError.warn("411: value empty")
+        return
+      }
+
+      db_filter += db_operand + " " + db_column + " " + db_compare + " " + db_value + " "
+
+      temp_first = false
+    }
+  }
+
+  // count result
+  // ---------------------------------------------------------------------------
+  result_number_of_rows = 0
+
+  // perform count operation.
+  query_string = sprintf("SELECT count(*) as number FROM %s %s ",db_type,db_filter)
+  console.log(query_string)
+  db.all(query_string,function(err,rows) {
+    try {
+      if(err) {
+        console.log(err.message.substring(0,28))
+        if(err.message.substring(0,27)=="SQLITE_ERROR: no such table") {
+          throw new KError("414",err)
+        } else if(err.message.substring(0,28)=="SQLITE_ERROR: no such column") {
+          throw new KError("418",err)
+        } else {
+          throw new KError("903",err)
+        }
+      }
+
+      temp_rows = rows[0].number
+
+      if(temp_offset > temp_rows) {
+        throw new KError("412",err)
+      }
+
+      /*
+      console.log(temp_offset,temp_limit,temp_rows)
+      if(temp_offset + temp_limit >= temp_rows) {
+        throw new KError("413",err)
+      }
+      */
+
+      // perform search operation
+      query_string = sprintf("SELECT * FROM %s %s %s %s %s %s",db_type,db_filter,db_orderby,db_order_direction,db_limit,db_offset)
+      console.log(">>>"+query_string)
+      db.all(query_string,function(err,rows) {
+        try {
+          if(err) {
+            console.log("hier902")
+            throw new KError("902",err)
+          }
+
+          res.status(200);
+          res.json({'code':0,'amount':temp_rows,'data':rows,'errors':undefined});
+          logAccess.debug("200: " + query_string)
+        } catch (err) {
+          console.log(err)
+          switch(err.name) {
+            case "902": {
+              res.status(500)
+              res.json({'code':902,'errors':err.errors})
+              logError.error("902: db search error:" + err.errors)
+              return
+            }
+            default: {
+              res.status(500)
+              res.json({'code':700,'errors':err.errors})
+              logError.error("700: db connection error:" + err.errors)
+              return
+            }
+          }
+        }
       });
+    } catch(err) {
+      console.log("heir"+err.name)
+      switch(err.name) {
+        case "418": {
+          res.status(400)
+          res.json({'code':418,'errors':err})
+          logError.warn("418: Unknown column in filter")
+          return
+        }
+        case "414": {
+          res.status(400)
+          res.json({'code':414,'errors':err})
+          logError.warn("414: Object type unknown:" + db_type)
+          return
+        }
+        case "412": {
+          res.status(400)
+          res.json({'code':412,'erors':undefined})
+          logError.error(sprintf("412: Offset:%s is higher than the amount of data:%s",temp_offset,temp_rows))
+          return
+        }
+        /*case "413": {
+          res.status(400)
+          res.json({'code':413,'erors':undefined})
+          logError.error(sprintf("413: Offset:%s + limit:%s out of range:%s",temp_offset,temp_limit,temp_rows))
+          return
+        }*/
+        case "903": {
+          res.status(500)
+          res.json({'code':903,'errors':err.errors})
+          logError.error("903: db count error:" + err.errors)
+          return
+        }
+        default: {
+          res.status(500)
+          res.json({'code':700,'errors':err.errors})
+          logError.error("700: db connection error:" + err.errors)
+          return
+        }
+      }
     }
   });
+
+  /*req.getConnection(function(err,conn){
+    if (err) {
+      res.status(500)
+      res.json({'code':700,'errors':err})
+      logError.error("700: db connection error:" + err)
+      return
+    } else {
+      console.log(sprintf("SELECT count(*) as number FROM %s %s ",db_type,db_filter))
+      var query = conn.query(sprintf("SELECT count(*) as number FROM %s %s ",db_type,db_filter),function(err,rows){
+        if (err) {
+          if(err.errno==1146) {
+            res.status(400)
+            res.json({'code':414,'errors':err})
+            logError.warn("414: Object type unknown:" + db_type)
+            return
+          } else {
+            res.status(500)
+            res.json({'code':903,'errors':err})
+            logError.error("903: db count error:" + err)
+            return
+          }
+        }
+
+        if(temp_offset >= rows[0].number) {
+          res.status(400)
+          res.json({'code':412,'erors':undefined})
+          logError.error(sprintf("412: Offset:%s is higher than the amount of data:%s",temp_offset,rows[0].number))
+          return
+        }
+
+        if(temp_offset + temp_limit >= rows[0].number) {
+          res.status(400)
+          res.json({'code':413,'erors':undefined})
+          logError.error(sprintf("413: Offset:%s + limit:%s out of range:%s",temp_offset,temp_limit,rows[0].number))
+          return
+        }
+
+        result_number_of_rows = rows[0].number
+        console.log(sprintf(">>>>> SELECT * FROM %s %s %s %s %s %s",db_type,db_filter,db_orderby,db_order_direction,db_limit,db_offset))
+
+        // query
+        // ---------------------------------------------------------------------
+        var query_string = sprintf("SELECT * FROM %s %s %s %s %s %s",db_type,db_filter,db_orderby,db_order_direction,db_limit,db_offset)
+        var query = conn.query(query_string,function(err,rows){
+          if (err) {
+            res.status(500)
+            res.json({'code':902,'errors':err})
+            logError.error("902: db select error:" + err)
+            return
+          }
+
+          res.status(200);
+          res.json({'code':0,'amount':result_number_of_rows,'data':rows,'errors':undefined});
+          logAccess.debug("200: " + query_string)
+        });
+      });
+    }
+  });*/
 });
 
 // generic single router
 // =============================================================================
-var database_single = router.route('/db/:type/:id')
+var database_single = router.route('/db/:type/:uid')
 
 // generic get single
 // *****************************************************************************
 // output:
 // -------
-// status:  0: ok, object found
-//          1: object not found
-//          2: object type unknown
-//          test if only one row exist is done by the database because of PK
+// code:    0:    ok, object found
+//          414:  object type unknown
+//          418:  unknown column
+//          419:  object not found
+// data:    data (rows)
+// errors:  errors
 // *****************************************************************************
 database_single.get(function(req,res,next){
-  var type = req.params.type
-  var id = req.params.id
+  var db_type = req.params.type
+  var uid = req.params.uid
 
+  var query_string = sprintf("SELECT * FROM %s WHERE uid =%s",db_type,uid)
+  db.all(query_string,function(err,rows) {
+    try {
+      if(err) {
+        console.log(err.message.substring(0,28))
+        if(err.message.substring(0,27)=="SQLITE_ERROR: no such table") {
+          throw new KError("414",err)
+        } else if(err.message.substring(0,28)=="SQLITE_ERROR: no such column") {
+          throw new KError("418",err)
+        } else {
+          throw new KError("902",err)
+        }
+      }
+
+      if(rows.length == 0) {
+        res.status(400)
+        res.json({'code':419,'errors':undefined})
+        logError.warn("419: Object not found:" + query_string)
+        return;
+      }
+
+      res.status(200)
+      res.json({'code':0,'amount':rows.length,'data':rows,'errors':undefined})
+      logAccess.debug("200: " + query_string)
+    } catch (err) {
+      switch(err.name) {
+        case "418": {
+          res.status(400)
+          res.json({'code':418,'errors':err})
+          logError.warn("418: Unknown column in filter")
+          return
+        }
+        case "414": {
+          res.status(400)
+          res.json({'code':414,'errors':err})
+          logError.warn("414: Object type unknown:" + db_type)
+          return
+        }
+        case "902": {
+          res.status(400)
+          res.json({'code':902,'errors':err})
+          logError.warn("902: db select error")
+          return
+        }
+        default: {
+          res.status(500)
+          res.json({'code':700,'errors':err.errors})
+          logError.error("700: db connection error:" + err.errors)
+          return
+        }
+      }
+    }
+  });
+
+  /* MySQL
+     -----
   req.getConnection(function(err,conn){
     if (err) {
       res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
+      res.json({'code':700,'errors':err})
+      logError.error("700: db connection error:" + err)
       return
     } else {
-      var query_string = sprintf("SELECT * FROM %s WHERE id =%s",type,id)
+      var query_string = sprintf("SELECT * FROM %s WHERE uid =%s",type,uid)
       var query = conn.query(query_string,function(err,rows){
         if(err){
           if(err.errno==1146) {
-            logError.warn("400: Object type unknown:" + query_string)
             res.status(400)
-            res.json({'status':2})
+            res.json({'code':415,'errors':err})
+            logError.warn("415: Object type unknown:" + type)
           } else {
-            logError.error("500: " + err)
             res.status(500)
+            res.json({'code':902,'errors':err})
+            logError.error("902: db select error:" + err)
           }
           return;
         }
 
         if(rows.length == 0) {
-          logError.warn("400: Object not found:" + query_string)
           res.status(400)
-          res.json({'status':1})
+          res.json({'code':416,'errors':undefined})
+          logError.warn("416: Object not found:" + query_string)
           return;
         }
 
-        logAccess.debug("200: " + query_string)
         res.status(200)
-        res.json(rows)
+        res.json({'code':0,'data':rows,'errors':undefined})
+        logAccess.debug("200: " + query_string)
       });
     }
-  });
+  }); */
 });
 
 // generic delete
 // *****************************************************************************
+// Perform delete operation.
+// *****************************************************************************
 // output:
 // -------
-//          2: object type unknown
-// status:  0: ok, object deleted
-//          1: object not found
-//          3: object has FK relations
+// code:    0:    ok, object deleted
+//          300:  Object type unkown
+//          301:  FK relations to object exist
+//          302:  Object not found
+// errors:  errors
 // *****************************************************************************
 database_single.delete(function(req,res,next){
   var type = req.params.type;
-  var id = req.params.id;
+  var uid = req.params.uid;
 
+  query_string = "DELETE from " + type + " where uid='" + uid + "'"
+  console.log(query_string)
+  try {
+    db.run(query_string,function(err) {
+      if(err) {
+        console.log(err)
+        if(err.errno==1) {
+          res.status(400)
+          res.json({'code':300,'errors':err});
+          logError.warn("300: Object type unknown:" + type)
+          return
+        } else {
+          res.status(500)
+          res.json({'code':904,'errors':err})
+          logError.error("904: db delete error:" + err)
+          return
+        }
+      }
+
+      console.log(this)
+      if(this.changes == 0) {
+        res.status(400);
+        res.json({'code':302,'errors':undefined})
+        logError.warn("302: Object not found:" + query_string)
+        return;
+      }
+
+      res.status(200);
+      res.json({'code':0,'errors':undefined});
+      logAccess.debug("200: " + query_string)
+      return
+    });
+  } catch(err) {
+    res.status(500)
+    res.json({'code':700,'errors':err})
+    logError.error("700: db connection error:" + err)
+    return
+  }
+
+  /* Mysql
+     -----
   req.getConnection(function (err, conn) {
     if (err) {
       res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
+      res.json({'code':700,'errors':err})
+      logError.error("700: DB connection error:" + err)
       return
     } else {
-      var query_string = sprintf("Delete from %s where id =%s",type,id)
+      var query_string = sprintf("Delete from %s where uid =%s",type,uid)
       var query = conn.query(query_string, function(err, rows){
         if(err){
           if(err.errno==1146) {
-            logError.warn("400: Object type unknown:" + query_string)
             res.status(400)
-            res.json({'status':2});
+            res.json({'code':300,'errors':err});
+            logError.warn("300: Object type unknown:" + type)
           } else if(err.errno==1451) {
-            logError.warn("400: FK relations to object exist:" + query_string)
             res.status(400)
-            res.json({'status':3});
+            res.json({'code':301,'errors':err});
+            logError.warn("301: FK relations to object exist:" + query_string)
           } else {
-            logError.error("500: " + err)
             res.status(500)
+            res.json({'code':904,'errors':err});
+            logError.error("904: DB delete error:" + err)
           }
           return;
         }
 
         if(rows.affectedRows == 0) {
-          logError.warn("400: Object not found:" + query_string)
           res.status(400);
-          res.json({'status':1})
+          res.json({'code':302,'errors':undefined})
+          logError.warn("302: Object not found:" + query_string)
           return;
         }
 
-        logAccess.debug("200: " + query_string)
         res.status(200);
-        res.json({'status':0});
+        res.json({'code':0,'errors':undefined});
+        logAccess.debug("200: " + query_string)
       });
     }
-  });
+  });*/
 });
 
 // =============================================================================
 // UUID
 // =============================================================================
+// Generate UUID
+// *****************************************************************************
+// output:
+// -------
+// code:    0: uuid generated
+// uuid:    uuid
+// errors:  undefined
+// *****************************************************************************
 var uuid = router.route('/uuid');
 
+function CreateGuid() {
+   function _p8(s) {
+      var p = (Math.random().toString(16)+"000000000").substr(2,8);
+      return s ? "-" + p.substr(0,4) + "-" + p.substr(4,4) : p ;
+   }
+   return _p8() + _p8(true) + _p8(true) + _p8();
+}
+
 uuid.get(function(req,res,next){
+  var js_uuid = CreateGuid();
+  res.status(200);
+  res.json({'code':0,'uuid':js_uuid,'errors':undefined});
+  logAccess.debug("200: uuid:" + js_uuid)
+
+  /* mysql
+    ------
   req.getConnection(function(err,conn){
       console.log("get uuid")
       if (err) {
         res.status(500)
-        res.json({'status':5001})
-        logError.error("500: " + err)
+        res.json({'code':700,'errors':err})
+        logError.error("700: db connection error:" + err)
         return
       } else {
         console.log("no error get uuid")
@@ -439,159 +1053,83 @@ uuid.get(function(req,res,next){
               console.log("Fehler:" + err);
               return next("Database error, check your query");
           }
-          console.log(rows);
-          res.json(rows);
+          res.json({'data':rows});
           res.status(200).send();
           return;
        });
      }
-  });
+  });*/
 });
 
 // =============================================================================
-// Engine
+// Runtime
 // =============================================================================
-var engine = router.route('/engine');
+var runtime = router.route('/runtime');
 
-// POST engine data to the DB
+// POST runtime data to the DB
 // *****************************************************************************
 // output:
 // -------
 // status:    0: ok, object found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
-// id:        id of the new object
+// uid:       uid of the new object
 // errors:    errors
 // *****************************************************************************
-engine.post(function(req,res,next){
-  req.assert('name','Name is required').notEmpty();
-  req.assert('executable','Executable is required').notEmpty();
+runtime.post(function(req,res,next){
+  req.assert('Name','Name is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
-        executable:req.body.executable,
-        id_system:req.body.id_system,
-        uid_logo:req.body.uid_logo,
-     };
+      name:req.body.Name,
+    };
 
-    general_create(req,res,"KEngine",data);
+    general_create(req,res,"KRuntime",data);
   }
 });
 
-// Engine single route (PUT)
+// Runtime single route (PUT)
 // =============================================================================
-var engine_single = router.route('/engine/:id');
+var runtime_single = router.route('/runtime/:uid');
 
 /*------------------------------------------------------
 route.all is extremely useful. you can use it to do
 stuffs for specific routes. for example you need to do
-a validation everytime route /api/user/:user_id it hit.
+a validation everytime route /api/user/:user_uid it hit.
 
-remove engine_single.all() if you dont want it
+remove runtime_single.all() if you dont want it
 ------------------------------------------------------*/
-/* engine_single.all(function(req,res,next){
-    console.log("You need to smth about engine_single Route ? Do it here");
+/* runtime_single.all(function(req,res,next){
+    console.log("You need to smth about runtime_single Route ? Do it here");
     console.log(req.params);
     next();
 }); */
 
-// PUT engine to the DB
+// PUT runtime to the DB
 // *****************************************************************************
 // output:
 // -------
 // status:    0: ok, object found
 //            1: object not found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // errors:    errors
 // *****************************************************************************
-engine_single.put(function(req,res,next){
-  var id = req.params.id;
-  var id_system = req.body.id_system;
+runtime_single.put(function(req,res,next){
+  var uid = req.params.uid;
 
-  req.assert('name','Name is required').notEmpty();
-  req.assert('executable','Executable is required').notEmpty();
+  req.assert('Name','Name is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-      name:req.body.name,
-      executable:req.body.executable,
-      id_system:id_system,
-      uid_logo:req.body.uid_logo
+      name:req.body.Name,
     };
 
-    general_update(req,res,"KEngine",data,id);
+    general_update(req,res,"KRuntime",data,uid);
   }
 });
 
-// Engine count route
-// =============================================================================
-var enginecountroute = router.route('/engine/count/:pattern');
-
-// GET number of engines from the DB that match the pattern
-// *****************************************************************************
-enginecountroute.get(function(req,res,next){
-  var pattern = req.params.pattern;
-
-  if(pattern == '<EMPTY>') {
-    pattern = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query("SELECT count(*) as number FROM KEngine WHERE name like ?",'%'+[pattern]+'%',function(err,rows){
-        if(err){
-            console.log(err);
-            return next("Database error, check your query");
-        }
-        res.status(200);
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// Count route
-// =============================================================================
-var enginesliceroute = router.route('/engine/:offset/:limit/:filter')
-
-// GET engines slice from the DB
-// *****************************************************************************
-enginesliceroute.get(function(req,res,next){
-  var offset = req.params.offset;
-  var limit = req.params.limit;
-  var filter = req.params.filter;
-
-  if(filter == '<EMPTY>') {
-    filter = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) return next("Cannot Connect");
-    var query = conn.query(sprintf("SELECT * FROM KEngine where name like ? limit %s offset %s",limit,offset),'%'+[filter]+'%',function(err,rows){
-      if(err){
-          console.log(err);
-          return next("Database error, check your query");
-      }
-      res.status(200);
-      res.json(rows);
-    });
-  });
-});
-
-var enginepicture = router.route('/engine/upload/:uuid')
+var runtimepicture = router.route('/runtime/upload/:uuid')
 
 var multer = require('multer');
 
-/* Disk Storage engine of multer gives you full control on storing files to disk. The options are destination (for determining which folder the file should be saved) and filename (name of the file inside the folder) */
+/* Disk Storage Runtime of multer gives you full control on storing files to disk. The options are destination (for determining which folder the file should be saved) and filename (name of the file inside the folder) */
 
 var storage = multer.diskStorage({
   destination: function (request, file, callback) {
@@ -608,7 +1146,7 @@ var storage = multer.diskStorage({
 var upload = multer({storage: storage}).single('photo');
 
 //Posting the file upload
-enginepicture.post(function(request, response) {
+runtimepicture.post(function(request, response) {
   console.log(request.body);
   upload(request, response, function(err) {
   if(err) {
@@ -630,27 +1168,27 @@ var system = router.route('/system');
 // output:
 // -------
 // status:    0: ok, object found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // id:        id of the new object
 // errors:    errors
 // *****************************************************************************
 system.post(function(req,res,next){
-  req.assert('name','Name is required').notEmpty();
+  req.assert('Name','Name is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
-     };
+      Name:req.body.Name
+    }
+    if(req.body.DefaultRuntimeUID) {
+      data["DefaultVersionUID"] = req.body.DefaultRuntimeUID
+    };
 
     general_create(req,res,"KSystem",data);
   }
 });
 
-// Engine single route (PUT)
+// System single route (PUT)
 // =============================================================================
-var system_single = router.route('/system/:id');
+var system_single = router.route('/system/:uid');
 
 // PUT system to the DB
 // *****************************************************************************
@@ -658,942 +1196,287 @@ var system_single = router.route('/system/:id');
 // -------
 // status:    0: ok, object found
 //            1: object not found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // errors:    errors
 // *****************************************************************************
 system_single.put(function(req,res,next){
-  var id = req.params.id;
+  var uid = req.params.uid;
 
-  req.assert('name','Name is required').notEmpty();
+  req.assert('Name','Name is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
+      Name:req.body.Name
+    }
+    if(req.body.DefaultRuntimeUID) {
+      data["DefaultVersionUID"] = req.body.DefaultRuntimeUID
     };
 
-    general_update(req,res,"KSystem",data,id);
+    general_update(req,res,"KSystem",data,uid);
   }
 });
 
-// Engine count route
 // =============================================================================
-var systemcountroute = router.route('/system/count/:pattern');
-
-// GET number of systems from the DB that match the pattern
-// *****************************************************************************
-systemcountroute.get(function(req,res,next){
-  var pattern = req.params.pattern;
-
-  if(pattern == '<EMPTY>') {
-    pattern = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query("SELECT count(*) as number FROM KSystem WHERE name like ?",'%'+[pattern]+'%',function(err,rows){
-        if(err){
-            console.log(err);
-            return next("Database error, check your query");
-        }
-        res.status(200);
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// single route (PUT)
-var systemsearchroute = router.route('/system/search/:filters/:patterns');
-
-// GET search route for system from the DB
+// Setup
 // =============================================================================
-systemsearchroute.get(function(req,res,next){
-  kautschSearch(req,res,next,'KSystem');
-});
+var setup = router.route('/setup');
 
-// Count route
-// =============================================================================
-var systemsliceroute = router.route('/system/:offset/:limit/:filter')
-
-// GET systems slice from the DB
-// *****************************************************************************
-systemsliceroute.get(function(req,res,next){
-  console.log("slice4");
-
-  var offset = req.params.offset;
-  var limit = req.params.limit;
-  var filter = req.params.filter;
-
-  if(filter == '<EMPTY>') {
-    filter = '';
-  }
-
-  req.getConnection(function(err,conn){
-      if (err) return next("Cannot Connect");
-      var query = conn.query(sprintf("SELECT * FROM KSystem where name like ? limit %s offset %s",limit,offset),'%'+[filter]+'%',function(err,rows){
-          if(err){
-              console.log(err);
-              return next("Database error, check your query");
-          }
-          res.json(rows);
-       });
-  });
-});
-
-// =============================================================================
-// Engine_configuration
-// =============================================================================
-var engine_configuration = router.route('/engine_configuration');
-
-// POST engine_configuration data to the DB
+// POST setup data to the DB
 // *****************************************************************************
 // output:
 // -------
 // status:    0: ok, object found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // id:        id of the new object
 // errors:    errors
 // *****************************************************************************
-engine_configuration.post(function(req,res,next){
-  req.assert('name','Name is required').notEmpty();
+setup.post(function(req,res,next){
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('SystemUID','SystemUID is required').notEmpty();
+  req.assert('RuntimeUID','RuntimeUID is required').notEmpty();
+  req.assert('Configuration','Configuration is required').notEmpty();
+
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
+        Name:req.body.Name,
+        SystemUID:req.body.SystemUID,
+        RuntimUID:req.body.RuntimeUID,
+        Configuration:req.body.Configuration
      };
 
-    general_create(req,res,"KEngine_configuration",data);
+    general_create(req,res,"KSetup",data);
   }
 });
 
-// Engine single route (PUT)
+// Setup single route (PUT)
 // =============================================================================
-var engine_configuration_single = router.route('/engine_configuration/:id');
+var setup_single = router.route('/setup/:uid');
 
-// PUT engine_configuration to the DB
+// PUT setup to the DB
 // *****************************************************************************
 // output:
 // -------
 // status:    0: ok, object found
 //            1: object not found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // errors:    errors
 // *****************************************************************************
-engine_configuration_single.put(function(req,res,next){
-  var id = req.params.id;
+setup_single.put(function(req,res,next){
+  var uid = req.params.uid;
 
-  req.assert('name','Name is required').notEmpty();
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('SystemUID','SystemUID is required').notEmpty();
+  req.assert('RuntimeUID','RuntimeUID is required').notEmpty();
+  req.assert('Configuration','Configuration is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
+      Name:req.body.Name,
+      SystemUID:req.body.SystemUID,
+      RuntimUID:req.body.RuntimeUID,
+      Configuration:req.body.Configuration
     };
 
-    general_update(req,res,"KEngine_configuration",data,id);
+    general_update(req,res,"KSetup",data,uid);
   }
 });
 
-// Engine count route
 // =============================================================================
-var engine_configurationcountroute = router.route('/engine_configuration/count/:pattern');
-
-// GET number of engine_configurations from the DB that match the pattern
-// *****************************************************************************
-engine_configurationcountroute.get(function(req,res,next){
-  var pattern = req.params.pattern;
-
-  if(pattern == '<EMPTY>') {
-    pattern = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query("SELECT count(*) as number FROM KEngine_configuration WHERE name like ?",'%'+[pattern]+'%',function(err,rows){
-        if(err){
-            console.log(err);
-            return next("Database error, check your query");
-        }
-        res.status(200);
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// Count route
+// GameVersion
 // =============================================================================
-var engine_configurationsliceroute = router.route('/engine_configuration/:offset/:limit/:filter')
+var gameversion = router.route('/gameversion');
 
-// GET engine_configurations slice from the DB
-// *****************************************************************************
-engine_configurationsliceroute.get(function(req,res,next){
-  console.log("slice1");
-
-  var offset = req.params.offset;
-  var limit = req.params.limit;
-  var filter = req.params.filter;
-
-  if(filter == '<EMPTY>') {
-    filter = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query(sprintf("SELECT * FROM KEngine_configuration where name like ? limit %s offset %s",limit,offset),'%'+[filter]+'%',function(err,rows){
-        if(err){
-          console.log(err);
-          return next("Database error, check your query");
-        }
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// single route (PUT)
-var engine_configurationsearchroute = router.route('/engine_configuration/search/:pattern');
-
-// GET single engine_configuration from the DB
-// =============================================================================
-engine_configurationsearchroute.get(function(req,res,next){
-  kautschSearch(req,res,next,'KEngine_configuration');
-});
-
-
-// =============================================================================
-// Publisher
-// =============================================================================
-var publisher = router.route('/publisher');
-
-// POST publisher data to the DB
+// POST system data to the DB
 // *****************************************************************************
 // output:
 // -------
 // status:    0: ok, object found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // id:        id of the new object
 // errors:    errors
 // *****************************************************************************
-publisher.post(function(req,res,next){
-  req.assert('name','Name is required').notEmpty();
+gameversion.post(function(req,res,next){
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('SystemUID','SystemUID is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
-     };
+      Name:req.body.Name,
+      SystemUID:req.body.SystemUID
+    }
+    if(req.body.PublisherUID) {
+      data["PublisherUID"] = req.body.PublisherUID
+    };
+    if(req.body.DeveloperUID) {
+      data["DeveloperUID"] = req.body.DeveloperUID
+    };
+    if(req.body.IsAlwaysShow) {
+      data["IsAlwaysShow"] = req.body.IsAlwaysShow
+    };
 
-    general_create(req,res,"KPublisher",data);
+    general_create(req,res,"KGameVersion",data);
   }
 });
 
-// Engine single route (PUT)
+// GameVersion single route (PUT)
 // =============================================================================
-var publisher_single = router.route('/publisher/:id');
+var gameversion_single = router.route('/gameversion/:uid');
 
-// PUT publisher to the DB
+// PUT gameversion to the DB
 // *****************************************************************************
 // output:
 // -------
 // status:    0: ok, object found
 //            1: object not found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // errors:    errors
 // *****************************************************************************
-publisher_single.put(function(req,res,next){
-  var id = req.params.id;
+gameversion_single.put(function(req,res,next){
+  var uid = req.params.uid;
 
-  req.assert('name','Name is required').notEmpty();
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('SystemUID','SystemUID is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
-     };
-
-    general_update(req,res,"KPublisher",data,id);
-  }
-});
-
-// Engine count route
-// =============================================================================
-var publishercountroute = router.route('/publisher/count/:pattern');
-
-// GET number of publishers from the DB that match the pattern
-// *****************************************************************************
-publishercountroute.get(function(req,res,next){
-  var pattern = req.params.pattern;
-
-  if(pattern == '<EMPTY>') {
-    pattern = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query("SELECT count(*) as number FROM KPublisher WHERE name like ?",'%'+[pattern]+'%',function(err,rows){
-        if(err){
-            console.log(err);
-            return next("Database error, check your query");
-        }
-        res.status(200);
-        res.json(rows);
-      });
+      Name:req.body.Name,
+      SystemUID:req.body.SystemUID
     }
-  });
-});
+    if(req.body.PublisherUID) {
+      data["PublisherUID"] = req.body.PublisherUID
+    };
+    if(req.body.DeveloperUID) {
+      data["DeveloperUID"] = req.body.DeveloperUID
+    };
+    if(req.body.IsAlwaysShow) {
+      data["IsAlwaysShow"] = req.body.IsAlwaysShow
+    };
 
-// Count route
-// =============================================================================
-var publishersliceroute = router.route('/publisher/:offset/:limit/:filter')
-
-// GET publishers slice from the DB
-// *****************************************************************************
-publishersliceroute.get(function(req,res,next){
-  console.log("slice2");
-
-  var offset = req.params.offset;
-  var limit = req.params.limit;
-  var filter = req.params.filter;
-
-  if(filter == '<EMPTY>') {
-    filter = '';
+    general_update(req,res,"KGameVersion",data,uid);
   }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query(sprintf("SELECT * FROM KPublisher where name like ? limit %s offset %s",limit,offset),'%'+[filter]+'%',function(err,rows){
-        if(err){
-            console.log(err);
-            return next("Database error, check your query");
-        }
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// single route (PUT)
-var publishersearchroute = router.route('/publisher/search/:pattern');
-
-// GET single publisher from the DB
-// =============================================================================
-publishersearchroute.get(function(req,res,next){
-  kautschSearch(req,res,next,'KPublisher');
 });
 
 // =============================================================================
-// Tag_category
+// GameVariation
 // =============================================================================
-var tag_category = router.route('/tag_category');
+var gamevariation = router.route('/gamevariation');
 
-// POST tag_category data to the DB
+// POST gamevariation data to the DB
 // *****************************************************************************
 // output:
 // -------
 // status:    0: ok, object found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // id:        id of the new object
 // errors:    errors
 // *****************************************************************************
-tag_category.post(function(req,res,next){
-  req.assert('name','Name is required').notEmpty();
+gamevariation.post(function(req,res,next){
+  req.assert('Name','Name is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
-        description:req.body.description,
-     };
+      Name:req.body.Name
+    }
+    if(req.body.DefaultSetupUID) {
+      data["DefaultSetupUID"] = req.body.DefaultSetupUID
+    };
+    if(req.body.PublisherUID) {
+      data["PublisherUID"] = req.body.PublisherUID
+    };
+    if(req.body.DeveloperUID) {
+      data["DeveloperUID"] = req.body.DeveloperUID
+    };
+    if(req.body.IsAlwaysShow) {
+      data["IsAlwaysShow"] = req.body.IsAlwaysShow
+    };
 
-    general_create(req,res,"KTag_category",data);
+    general_create(req,res,"KGameVariation",data);
   }
 });
 
-// Engine single route (PUT)
+// GameVariation single route (PUT)
 // =============================================================================
-var tag_category_single = router.route('/tag_category/:id');
+var gamevariation_single = router.route('/gamevariation/:uid');
 
-// PUT tag_category to the DB
+// PUT gamevariation to the DB
 // *****************************************************************************
 // output:
 // -------
 // status:    0: ok, object found
 //            1: object not found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // errors:    errors
 // *****************************************************************************
-tag_category_single.put(function(req,res,next){
-  var id = req.params.id;
+gamevariation_single.put(function(req,res,next){
+  var uid = req.params.uid;
 
-  req.assert('name','Name is required').notEmpty();
+  req.assert('Name','Name is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
-        description:req.body.description
-     };
+      Name:req.body.Name
+    }
+    if(req.body.DefaultSetupUID) {
+      data["DefaultSetupUID"] = req.body.DefaultSetupUID
+    };
+    if(req.body.PublisherUID) {
+      data["PublisherUID"] = req.body.PublisherUID
+    };
+    if(req.body.DeveloperUID) {
+      data["DeveloperUID"] = req.body.DeveloperUID
+    };
+    if(req.body.IsAlwaysShow) {
+      data["IsAlwaysShow"] = req.body.IsAlwaysShow
+    };
 
-     general_update(req,res,"KTag_category",data,id);
+    general_update(req,res,"KGameVariation",data,uid);
   }
 });
 
-// Engine count route
 // =============================================================================
-var tag_categorycountroute = router.route('/tag_category_count/:filters/:patterns');
-
-// GET number of tag_categorys from the DB that match the pattern
-// *****************************************************************************
-tag_categorycountroute.get(function(req,res,next){
-  var filters = req.params.filters;
-  var filter = '';
-  var patterns = req.params.patterns;
-  var pattern = '';
-  var where = '';
-
-  if(!(req.params.filters == '|')) {
-    var filters = req.params.filters.split("|");
-
-    for(i=0;i<filters.length;i+=2) {
-      filter += filters[i] + " = '" + filters[i*1] + "'";
-      console.log("Filter:"+filter);
-    }
-  }
-
-  if(!(req.params.patterns == '|')) {
-    console.log("patterns:"+ req.params.patterns);
-    var patterns = req.params.patterns.split("|");
-
-    for(i=0;i<patterns.length;i+=2) {
-      if(i>0 || !(filter == '')) {
-        pattern+= ' and ';
-      }
-      pattern += patterns[i] + " like '%" + patterns[i+1] + "%'";
-      console.log("Pattern:" + pattern);
-    }
-  }
-
-  if(!(filter == '' && pattern == '')) {
-    where = 'where';
-  }
-
-  console.log("Query:" + sprintf("SELECT count(*) FROM KTag_category %s %s %s",where,filter,pattern));
-
-  req.getConnection(function(err,conn){
-    if (err) return next("Cannot Connect");
-    var query = conn.query(sprintf("SELECT count(*) as number FROM KTag_category %s %s %s",where,filter,pattern),function(err,rows){
-      if(err){
-          console.log(err);
-          return next("Database error, check your query");
-      }
-      res.status(200);
-      res.json(rows);
-    });
-  });
-});
-
-// Slice route
+// Organisation
 // =============================================================================
-var tag_categorysliceroute = router.route('/tag_category/:offset/:limit/:filters/:patterns')
+var organisation = router.route('/organisation');
 
-// GET tag_categorys slice from the DB
-// *****************************************************************************
-tag_categorysliceroute.get(function(req,res,next){
-  console.log("slice3:" + req.params.filters + " - " + req.params.patterns);
-
-  var offset = req.params.offset;
-  var limit = req.params.limit;
-  var filters = req.params.filters;
-  var filter = '';
-  var patterns = req.params.patterns;
-  var pattern = '';
-  var where = '';
-
-  if(!(req.params.filters == '|')) {
-    var filters = req.params.filters.split("|");
-
-    for(i=0;i<filters.length;i+=2) {
-      filter += filters[i] + " = '" + filters[i*1] + "'";
-      console.log("Filter:"+filter);
-    }
-  }
-
-  if(!(req.params.patterns == '|')) {
-    console.log("patterns:"+ req.params.patterns);
-    var patterns = req.params.patterns.split("|");
-
-    for(i=0;i<patterns.length;i+=2) {
-      if(i>0 || !(filter == '')) {
-        pattern+= ' and ';
-      }
-      pattern += patterns[i] + " like '%" + patterns[i+1] + "%'";
-      console.log("Pattern:" + pattern);
-    }
-  }
-
-  if(!(filter == '' && pattern == '')) {
-    where = 'where';
-  }
-
-  console.log("Query:" + sprintf("SELECT * FROM KTag_category %s %s %s limit %s offset %s",where,filter,pattern,limit,offset));
-
-  req.getConnection(function(err,conn){
-      if (err) return next("Cannot Connect");
-      var query = conn.query(sprintf("SELECT * FROM KTag_category %s %s %s limit %s offset %s",where,filter,pattern,limit,offset),function(err,rows){
-          if(err){
-              console.log(err);
-              return next("Database error, check your query");
-          }
-          res.json(rows);
-       });
-  });
-});
-
-// single route (PUT)
-var tag_categorysearchroute = router.route('/tag_category/search/:pattern');
-
-// GET single tag_category from the DB
-// =============================================================================
-tag_categorysearchroute.get(function(req,res,next){
-  kautschSearch(req,res,next,'KTag_category');
-});
-
-
-// =============================================================================
-// Tag
-// =============================================================================
-var tag = router.route('/tag');
-
-// POST tag data to the DB
+// POST organisation data to the DB
 // *****************************************************************************
 // output:
 // -------
 // status:    0: ok, object found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // id:        id of the new object
 // errors:    errors
 // *****************************************************************************
-tag.post(function(req,res,next){
-  req.assert('name','Name is required').notEmpty();
+organisation.post(function(req,res,next){
+  req.assert('Name','Name is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
-     };
+      Name:req.body.Name,
+    };
 
-    general_create(req,res,"KTag",data);
+    general_create(req,res,"KOrganisation",data);
   }
 });
 
-// Engine single route (PUT)
+// Organisation single route (PUT)
 // =============================================================================
-var tag_single = router.route('/tag/:id');
+var organisation_single = router.route('/organisation/:uid');
 
-// PUT tag to the DB
+// PUT organisation to the DB
 // *****************************************************************************
 // output:
 // -------
 // status:    0: ok, object found
 //            1: object not found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // errors:    errors
 // *****************************************************************************
-tag_single.put(function(req,res,next){
-  var id = req.params.id;
-
-  req.assert('name','Name is required').notEmpty();
+organisation_single.put(function(req,res,next){
+  var uid = req.params.uid;
+  console.log(req.body)
+  req.assert('Name','Name is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
-     };
-
-     general_update(req,res,"KTag",data,id);
-  }
-});
-
-// Engine count route
-// =============================================================================
-var tagcountroute = router.route('/tag/count/:pattern');
-
-// GET number of tags from the DB that match the pattern
-// *****************************************************************************
-tagcountroute.get(function(req,res,next){
-  var pattern = req.params.pattern;
-
-  if(pattern == '<EMPTY>') {
-    pattern = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query("SELECT count(*) as number FROM KTag WHERE name like ?",'%'+[pattern]+'%',function(err,rows){
-        if(err){
-          console.log(err);
-          return next("Database error, check your query");
-        }
-        res.status(200);
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// single route (PUT)
-var tagsearchroute = router.route('/tag/search/:filters/:patterns');
-
-// GET single tag from the DB
-// =============================================================================
-tagsearchroute.get(function(req,res,next){
-  kautschSearch(req,res,next,'KTag');
-});
-
-// Count route
-// =============================================================================
-var tagsliceroute = router.route('/tag/:offset/:limit/:filter')
-
-// GET tags slice from the DB
-// *****************************************************************************
-tagsliceroute.get(function(req,res,next){
-  console.log("slice4");
-
-  var offset = req.params.offset;
-  var limit = req.params.limit;
-  var filter = req.params.filter;
-
-  if(filter == '<EMPTY>') {
-    filter = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query(sprintf("SELECT * FROM KTag where name like ? limit %s offset %s",limit,offset),'%'+[filter]+'%',function(err,rows){
-        if(err){
-          console.log(err);
-          return next("Database error, check your query");
-        }
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// =============================================================================
-// Engine_file
-// =============================================================================
-var engine_file = router.route('/engine_file');
-
-// POST engine_file data to the DB
-// *****************************************************************************
-// output:
-// -------
-// status:    0: ok, object found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
-// id:        id of the new object
-// errors:    errors
-// *****************************************************************************
-engine_file.post(function(req,res,next){
-  req.assert('name','Name is required').notEmpty();
-
-  if (general_validation(req,res,next)) {
-    var data = {
-        name:req.body.name,
+      Name:req.body.Name,
     };
 
-    general_create(req,res,"KEngine_file",data);
+    general_update(req,res,"KOrganisation",data,uid);
   }
 });
-
-// Engine single route (PUT)
-// =============================================================================
-var engine_file_single = router.route('/engine_file/:id');
-
-// PUT engine_file to the DB
-// *****************************************************************************
-// output:
-// -------
-// status:    0: ok, object found
-//            1: object not found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
-// errors:    errors
-// *****************************************************************************
-engine_file_single.put(function(req,res,next){
-  var id = req.params.id;
-
-  req.assert('name','Name is required').notEmpty();
-
-  if (general_validation(req,res,next)) {
-    var data = {
-        name:req.body.name,
-    };
-
-    general_update(req,res,"KEngine_file",data,id);
-  }
-});
-
-// Engine count route
-// =============================================================================
-var engine_filecountroute = router.route('/engine_file/count/:pattern');
-
-// GET number of engine_files from the DB that match the pattern
-// *****************************************************************************
-engine_filecountroute.get(function(req,res,next){
-  var pattern = req.params.pattern;
-
-  if(pattern == '<EMPTY>') {
-    pattern = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query("SELECT count(*) as number FROM KEngine_file WHERE name like ?",'%'+[pattern]+'%',function(err,rows){
-        if(err){
-          console.log(err);
-          return next("Database error, check your query");
-        }
-        res.status(200);
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// Count route
-// =============================================================================
-var engine_filesliceroute = router.route('/engine_file/:offset/:limit/:filter')
-
-// GET engine_files slice from the DB
-// *****************************************************************************
-engine_filesliceroute.get(function(req,res,next){
-  console.log("slice1");
-
-  var offset = req.params.offset;
-  var limit = req.params.limit;
-  var filter = req.params.filter;
-
-  if(filter == '<EMPTY>') {
-    filter = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query(sprintf("SELECT * FROM KEngine_file where name like ? limit %s offset %s",limit,offset),'%'+[filter]+'%',function(err,rows){
-        if(err){
-          console.log(err);
-          return next("Database error, check your query");
-        }
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// single route (PUT)
-var engine_filesearchroute = router.route('/engine_file/search/:pattern');
-
-// GET single engine_file from the DB
-// =============================================================================
-engine_filesearchroute.get(function(req,res,next){
-  kautschSearch(req,res,next,'KEngine_file');
-});
-
-
-// =============================================================================
-// Game_file
-// =============================================================================
-var game_file = router.route('/game_file');
-
-// POST game_file data to the DB
-// *****************************************************************************
-// output:
-// -------
-// status:    0: ok, object found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
-// id:        id of the new object
-// errors:    errors
-// *****************************************************************************
-game_file.post(function(req,res,next){
-  req.assert('name','Name is required').notEmpty();
-
-  if (general_validation(req,res,next)) {
-    var data = {
-        name:req.body.name,
-    };
-
-    general_create(req,res,"KGame_file",data);
-  }
-});
-
-// Engine single route (PUT)
-// =============================================================================
-var game_file_single = router.route('/game_file/:id');
-
-// PUT game_file to the DB
-// *****************************************************************************
-// output:
-// -------
-// status:    0: ok, object found
-//            1: object not found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
-// errors:    errors
-// *****************************************************************************
-game_file_single.put(function(req,res,next){
-  var id = req.params.id;
-
-  req.assert('name','Name is required').notEmpty();
-
-  if (general_validation(req,res,next)) {
-    var data = {
-        name:req.body.name,
-    };
-
-    general_update(req,res,"KGame_file",data,id);
-  }
-});
-
-// Engine count route
-// =============================================================================
-var game_filecountroute = router.route('/game_file/count/:pattern');
-
-// GET number of game_files from the DB that match the pattern
-// *****************************************************************************
-game_filecountroute.get(function(req,res,next){
-  var pattern = req.params.pattern;
-
-  if(pattern == '<EMPTY>') {
-    pattern = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query("SELECT count(*) as number FROM KGame_file WHERE name like ?",'%'+[pattern]+'%',function(err,rows){
-        if(err){
-          console.log(err);
-          return next("Database error, check your query");
-        }
-        res.status(200);
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// Count route
-// =============================================================================
-var game_filesliceroute = router.route('/game_file/:offset/:limit/:filter')
-
-// GET game_files slice from the DB
-// *****************************************************************************
-game_filesliceroute.get(function(req,res,next){
-  console.log("slice2");
-
-  var offset = req.params.offset;
-  var limit = req.params.limit;
-  var filter = req.params.filter;
-
-  if(filter == '<EMPTY>') {
-    filter = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query(sprintf("SELECT * FROM KGame_file where name like ? limit %s offset %s",limit,offset),'%'+[filter]+'%',function(err,rows){
-          if(err){
-              console.log(err);
-              return next("Database error, check your query");
-          }
-          res.json(rows);
-       });
-     }
-  });
-});
-
-// single route (PUT)
-var game_filesearchroute = router.route('/game_file/search/:pattern');
-
-// GET single game_file from the DB
-// =============================================================================
-game_filesearchroute.get(function(req,res,next){
-  kautschSearch(req,res,next,'KGame_file');
-});
-
 
 // =============================================================================
 // Game
@@ -1605,27 +1488,27 @@ var game = router.route('/game');
 // output:
 // -------
 // status:    0: ok, object found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // id:        id of the new object
 // errors:    errors
 // *****************************************************************************
 game.post(function(req,res,next){
-  req.assert('name','Name is required').notEmpty();
+  req.assert('Name','Name is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
+      Name:req.body.Name,
+    }
+    if(req.body.DefaultVersionUID) {
+      data["DefaultVersionUID"] = req.body.DefaultVersionUID
     };
 
     general_create(req,res,"KGame",data);
   }
 });
 
-// Engine single route (PUT)
+// Game single route (PUT)
 // =============================================================================
-var game_single = router.route('/game/:id');
+var game_single = router.route('/game/:uid');
 
 // PUT game to the DB
 // *****************************************************************************
@@ -1633,97 +1516,137 @@ var game_single = router.route('/game/:id');
 // -------
 // status:    0: ok, object found
 //            1: object not found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // errors:    errors
 // *****************************************************************************
 game_single.put(function(req,res,next){
-  var id = req.params.id;
+  var uid = req.params.uid;
 
-  req.assert('name','Name is required').notEmpty();
+  req.assert('Name','Name is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        name:req.body.name,
+      Name:req.body.Name,
+    }
+    if(req.body.DefaultVersionUID) {
+      data["DefaultVersionUID"] = req.body.DefaultVersionUID
     };
 
-    general_update(req,res,"KGame",data,id);
+    general_update(req,res,"KGame",data,uid);
   }
 });
 
-// Game count route
 // =============================================================================
-var gamecountroute = router.route('/game/count/:pattern');
+// File
+// =============================================================================
+var file = router.route('/file');
 
-// GET number of games from the DB that match the pattern
+// POST file data to the DB
 // *****************************************************************************
-gamecountroute.get(function(req,res,next){
-  var pattern = req.params.pattern;
-
-  if(pattern == '<EMPTY>') {
-    pattern = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query("SELECT count(*) as number FROM KGame WHERE name like ?",'%'+[pattern]+'%',function(err,rows){
-        if(err){
-          console.log(err);
-          return next("Database error, check your query");
-        }
-        res.status(200);
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// Count route
-// =============================================================================
-var gamesliceroute = router.route('/game/:offset/:limit/:filter')
-
-// GET games slice from the DB
+// output:
+// -------
+// status:    0: ok, object found
+// id:        id of the new object
+// errors:    errors
 // *****************************************************************************
-gamesliceroute.get(function(req,res,next){
-  console.log("slice3");
+file.post(function(req,res,next){
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('Path','Path is required').notEmpty();
 
-  var offset = req.params.offset;
-  var limit = req.params.limit;
-  var filter = req.params.filter;
+  if (general_validation(req,res,next)) {
+    var data = {
+      Name:req.body.Name,
+      Path:req.body.Path
+    };
 
-  if(filter == '<EMPTY>') {
-    filter = '';
+    general_create(req,res,"KFile",data);
   }
-
-  req.getConnection(function(err,conn){
-      if (err) return next("Cannot Connect");
-      var query = conn.query(sprintf("SELECT * FROM KGame where name like ? limit %s offset %s",limit,offset),'%'+[filter]+'%',function(err,rows){
-          if(err){
-              console.log(err);
-              return next("Database error, check your query");
-          }
-          res.json(rows);
-       });
-  });
 });
 
-// single route (PUT)
-var gamesearchroute = router.route('/game/search/:pattern');
-
-// GET single game from the DB
+// File single route (PUT)
 // =============================================================================
-gamesearchroute.get(function(req,res,next){
-  kautschSearch(req,res,next,'KGame');
+var file_single = router.route('/file/:uid');
+
+// PUT file to the DB
+// *****************************************************************************
+// output:
+// -------
+// status:    0: ok, object found
+//            1: object not found
+// errors:    errors
+// *****************************************************************************
+file_single.put(function(req,res,next){
+  var uid = req.params.uid;
+
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('Path','Path is required').notEmpty();
+
+  if (general_validation(req,res,next)) {
+    var data = {
+      Name:req.body.Name,
+      Path:req.body.Path
+    };
+
+    general_update(req,res,"KFile",data,uid);
+  }
 });
 
 // =============================================================================
-// Pictures
+// Link
+// =============================================================================
+var link = router.route('/link');
+
+// POST file data to the DB
+// *****************************************************************************
+// output:
+// -------
+// status:    0: ok, object found
+// id:        id of the new object
+// errors:    errors
+// *****************************************************************************
+link.post(function(req,res,next){
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('URL','URL is required').notEmpty();
+
+  if (general_validation(req,res,next)) {
+    var data = {
+      Name:req.body.Name,
+      URL:req.body.URL
+    };
+
+    general_create(req,res,"KLink",data);
+  }
+});
+
+// Link single route (PUT)
+// =============================================================================
+var link_single = router.route('/link/:uid');
+
+// PUT link to the DB
+// *****************************************************************************
+// output:
+// -------
+// status:    0: ok, object found
+//            1: object not found
+// errors:    errors
+// *****************************************************************************
+link_single.put(function(req,res,next){
+  var uid = req.params.uid;
+
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('URL','URL is required').notEmpty();
+
+  if (general_validation(req,res,next)) {
+    var data = {
+      Name:req.body.Name,
+      URL:req.body.URL
+    };
+
+    general_update(req,res,"KLink",data,uid);
+  }
+});
+
+// =============================================================================
+// Picture
 // =============================================================================
 var picture = router.route('/picture');
 
@@ -1732,22 +1655,17 @@ var picture = router.route('/picture');
 // output:
 // -------
 // status:    0: ok, object found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // id:        id of the new object
 // errors:    errors
 // *****************************************************************************
 picture.post(function(req,res,next){
-  req.assert('id_tag','Tag is required').notEmpty();
-  req.assert('uid_object','Object is required').notEmpty();
-  req.assert('uuid','UUID is required').notEmpty();
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('FileUUID','FileUUID is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        id_tag:req.body.id_tag,
-        uid_object:req.body.uid_object,
-        uuid:req.body.uuid
+      Name:req.body.Name,
+      FileUUID:req.body.FileUUID
     };
 
     general_create(req,res,"KPicture",data);
@@ -1756,114 +1674,254 @@ picture.post(function(req,res,next){
 
 // Picture single route (PUT)
 // =============================================================================
-var picture_single = router.route('/picture/:id');
+var picture_single = router.route('/picture/:uid');
 
-// PUT picture to the DB
+// PUT file to the DB
 // *****************************************************************************
 // output:
 // -------
 // status:    0: ok, object found
 //            1: object not found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // errors:    errors
 // *****************************************************************************
 picture_single.put(function(req,res,next){
-  var id = req.params.id;
+  var uid = req.params.uid;
 
-  req.assert('uid_object','Object is required').notEmpty();
-  req.assert('id_tag','Tag is required').notEmpty();
-  req.assert('uuid','Picture is required').notEmpty();
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('FileUUID','FileUUID is required').notEmpty();
 
   if (general_validation(req,res,next)) {
     var data = {
-        uid_object:req.body.uid_object,
-        id_tag:req.body.id_tag,
-        uuid:req.body.uuid
+      Name:req.body.Name,
+      FileUUID:req.body.FileUUID
     };
 
-    general_update(req,res,"KPicture",data,id);
+    general_update(req,res,"KPicture",data,uid);
   }
 });
 
-// Picture count route
 // =============================================================================
-var picturecountroute = router.route('/picture/count/:pattern');
+// Video
+// =============================================================================
+var video = router.route('/video');
 
-// GET number of pictures from the DB that match the pattern
+// POST video data to the DB
 // *****************************************************************************
-picturecountroute.get(function(req,res,next){
-  var pattern = req.params.pattern;
-
-  if(pattern == '<EMPTY>') {
-    pattern = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query("SELECT count(*) as number FROM KPicture WHERE uuid like ?",'%'+[pattern]+'%',function(err,rows){
-        if(err){
-            console.log(err);
-            return next("Database error, check your query");
-        }
-        res.status(200);
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// Count route
-// =============================================================================
-var picturesliceroute = router.route('/picture/:offset/:limit/:filter')
-
-// GET pictures slice from the DB
+// output:
+// -------
+// status:    0: ok, object found
+// id:        id of the new object
+// errors:    errors
 // *****************************************************************************
-picturesliceroute.get(function(req,res,next){
-  console.log("picture_slice3");
+video.post(function(req,res,next){
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('URL','URL is required').notEmpty();
 
-  var offset = req.params.offset;
-  var limit = req.params.limit;
-  var filter = req.params.filter;
+  if (general_validation(req,res,next)) {
+    var data = {
+      Name:req.body.Name,
+      URL:req.body.URL
+    };
 
-  if(filter == '<EMPTY>') {
-    filter = '';
+    general_create(req,res,"KVideo",data);
   }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query(sprintf("SELECT * FROM KPicture where uuid like ? limit %s offset %s",limit,offset),'%'+[filter]+'%',function(err,rows){
-        if(err){
-          console.log(err);
-          return next("Database error, check your query");
-        }
-        res.json(rows);
-      });
-    }
-  });
 });
 
-// single route (PUT)
-var picturesearchroute = router.route('/picture/search/:pattern');
-
-// GET single picture from the DB
+// Video single route (PUT)
 // =============================================================================
-picturesearchroute.get(function(req,res,next){
-  kautschSearch(req,res,next,'KPicture');
+var video_single = router.route('/video/:uid');
+
+// PUT video to the DB
+// *****************************************************************************
+// output:
+// -------
+// status:    0: ok, object found
+//            1: object not found
+// errors:    errors
+// *****************************************************************************
+video_single.put(function(req,res,next){
+  var uid = req.params.uid;
+
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('URL','URL is required').notEmpty();
+
+  if (general_validation(req,res,next)) {
+    var data = {
+      Name:req.body.Name,
+      URL:req.body.URL
+    };
+
+    general_update(req,res,"KVideo",data,uid);
+  }
 });
 
-var tagepicture = router.route('/picture/upload/:uuid')
+// =============================================================================
+// TagCategory
+// =============================================================================
+var tagcategory = router.route('/tagcategory');
+
+// POST tagcategory data to the DB
+// *****************************************************************************
+// output:
+// -------
+// status:    0: ok, object found
+// id:        id of the new object
+// errors:    errors
+// *****************************************************************************
+tagcategory.post(function(req,res,next){
+  req.assert('Name','Name is required').notEmpty();
+
+  if (general_validation(req,res,next)) {
+    var data = {
+      Name:req.body.Name,
+    };
+
+    general_create(req,res,"KTagCategory",data);
+  }
+});
+
+// TagCategory single route (PUT)
+// =============================================================================
+var tagcategory_single = router.route('/tagcategory/:uid');
+
+// PUT TagCategory to the DB
+// *****************************************************************************
+// output:
+// -------
+// status:    0: ok, object found
+//            1: object not found
+// errors:    errors
+// *****************************************************************************
+tagcategory_single.put(function(req,res,next){
+  var uid = req.params.uid;
+
+  req.assert('Name','Name is required').notEmpty();
+
+  if (general_validation(req,res,next)) {
+    var data = {
+      Name:req.body.Name,
+    };
+
+    general_update(req,res,"KTagCategory",data,uid);
+  }
+});
+
+// =============================================================================
+// Tag
+// =============================================================================
+var tag = router.route('/tag');
+
+// POST tag data to the DB
+// *****************************************************************************
+// output:
+// -------
+// status:    0: ok, object found
+// id:        id of the new object
+// errors:    errors
+// *****************************************************************************
+tag.post(function(req,res,next){
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('TagCategoryUID','TagCategoryUID is required').notEmpty();
+
+  if (general_validation(req,res,next)) {
+    var data = {
+      Name:req.body.Name,
+      TagCategoryUID:req.body.TagCategoryUID
+    };
+
+    general_create(req,res,"KTag",data);
+  }
+});
+
+// Tag single route (PUT)
+// =============================================================================
+var tag_single = router.route('/tag/:uid');
+
+// PUT Tag to the DB
+// *****************************************************************************
+// output:
+// -------
+// status:    0: ok, object found
+//            1: object not found
+// errors:    errors
+// *****************************************************************************
+tag_single.put(function(req,res,next){
+  var uid = req.params.uid;
+
+  req.assert('Name','Name is required').notEmpty();
+  req.assert('TagCategoryUID','TagCategoryUID is required').notEmpty();
+
+  if (general_validation(req,res,next)) {
+    var data = {
+      Name:req.body.Name,
+      TagCategoryUID:req.body.TagCategoryUID
+    };
+
+    general_update(req,res,"KTag",data,uid);
+  }
+});
+
+// =============================================================================
+// Object2Tag
+// =============================================================================
+var object2tag = router.route('/object2tag');
+
+// POST object2tag data to the DB
+// *****************************************************************************
+// output:
+// -------
+// status:    0: ok, object found
+// id:        id of the new object
+// errors:    errors
+// *****************************************************************************
+object2tag.post(function(req,res,next){
+  req.assert('TagUID','TagUID is required').notEmpty();
+  req.assert('ObjectUID','ObjectUID is required').notEmpty();
+
+  if (general_validation(req,res,next)) {
+    var data = {
+      TagUID:req.body.TagUID,
+      ObjectUID:req.body.ObjectUID
+    };
+
+    general_create(req,res,"KObject2Tag",data);
+  }
+});
+
+// =============================================================================
+// Object2MediaTag
+// =============================================================================
+var object2mediatag = router.route('/object2mediatag');
+
+// POST object2mediatag data to the DB
+// *****************************************************************************
+// output:
+// -------
+// status:    0: ok, object found
+// id:        id of the new object
+// errors:    errors
+// *****************************************************************************
+object2mediatag.post(function(req,res,next){
+  req.assert('TagUID','TagUID is required').notEmpty();
+  req.assert('MediaUID','MediaUID is required').notEmpty();
+  req.assert('ObjectUID','ObjectUID is required').notEmpty();
+
+  if (general_validation(req,res,next)) {
+    var data = {
+      TagUID:req.body.TagUID,
+      MediaUID:req.body.MediaUID,
+      ObjectUID:req.body.ObjectUID
+    };
+
+    general_create(req,res,"KObject2MediaTag",data);
+  }
+});
+
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// OLD
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+var tagedpicture = router.route('/picture/upload/:uuid')
 
 /* already declared */
 // var multer = require('multer');
@@ -1886,7 +1944,7 @@ var storage = multer.diskStorage({
 var upload = multer({storage: storage}).single('photo');
 */
 //Posting the file upload
-tagepicture.post(function(request, response) {
+tagedpicture.post(function(request, response) {
   console.log(request.body);
   upload(request, response, function(err) {
   if(err) {
@@ -1896,123 +1954,6 @@ tagepicture.post(function(request, response) {
   response.end('Your File Uploaded');
   })
 });
-
-
-
-
-// =============================================================================
-// Game2Tag
-// =============================================================================
-var game2tagpost = router.route('/game2tag');
-
-// POST game2tag data to the DB
-// *****************************************************************************
-// output:
-// -------
-// status:    0: ok, object found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
-// id:        id of the new object
-// errors:    errors
-// *****************************************************************************
-game2tagpost.post(function(req,res,next){
-  req.assert('id_game','Name is required').notEmpty();
-  req.assert('id_tag','Name is required').notEmpty();
-
-  if (general_validation(req,res,next)) {
-    var data = {
-        id_game:req.body.id_game,
-        id_tag:req.body.id_tag
-    };
-
-    general_create(req,res,"KGame2Tag",data);
-  }
-});
-
-var game2tag = router.route('/game2tag/:id_game');
-
-// Game2Tag single route (PUT)
-// =============================================================================
-var game2tag_single = router.route('/game2tag/:id');
-
-// Game2Tag count route
-// =============================================================================
-var game2tagcountroute = router.route('/game2tag/count/:id_game/:pattern');
-
-// GET number of game2tags from the DB that match the pattern
-// *****************************************************************************
-game2tagcountroute.get(function(req,res,next){
-  var id_game = req.params.id_game;
-  var pattern = req.params.pattern;
-
-  if(pattern == '<EMPTY>') {
-    pattern = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query(sprintf("SELECT count(*) as number FROM KVGame2Tag WHERE id_game = %s and tag_name like '%s'",id_game,'%'+[pattern]+'%'),function(err,rows){
-        if(err){
-          console.log(err);
-          return next("Database error, check your query");
-        }
-        res.status(200);
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// Count route
-// =============================================================================
-var game2tagsliceroute = router.route('/game2tag/:offset/:limit/:id_game/:filter')
-
-// GET game2tags slice from the DB
-// *****************************************************************************
-game2tagsliceroute.get(function(req,res,next){
-  var id_game = req.params.id_game;
-  var offset = req.params.offset;
-  var limit = req.params.limit;
-  var filter = req.params.filter;
-
-  if(filter == '<EMPTY>') {
-    filter = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query(sprintf("SELECT * FROM KVGame2Tag where id_game = %s and tag_name like '%s' limit %s offset %s",id_game,'%'+[filter]+'%',limit,offset),function(err,rows){
-        if(err){
-          console.log(err);
-          return next("Database error, check your query");
-        }
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// single route (PUT)
-var game2tagsearchroute = router.route('/game2tag/search/:filters/:patterns');
-
-// GET single game2tag from the DB
-// =============================================================================
-game2tagsearchroute.get(function(req,res,next){
-  kautschSearch(req,res,next,'KGame2Tag');
-});
-
-
 
 // =============================================================================
 // TagAndPicture
@@ -2024,9 +1965,6 @@ var tagandpicturepost = router.route('/tagandpicture');
 // output:
 // -------
 // status:    0: ok, object found
-//            800: validation error
-//            900: database error
-//            5001: no database connection
 // id:        id of the new object
 // errors:    errors
 // *****************************************************************************
@@ -2044,7 +1982,7 @@ tagandpicturepost.post(function(req,res,next){
   }
 });
 
-var tagandpicture = router.route('/tagandpicture/:id_game');
+var tagandpicture = router.route('/tagandpicture/:id_game'); //TODO: id_game???
 
 // GET tagandpictures from the DB
 // *****************************************************************************
@@ -2054,102 +1992,21 @@ tagandpicture.get(function(req,res,next){
   req.getConnection(function(err,conn){
     if (err) {
       res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
+      res.json({'code':700,'errors':err})
+      logError.error("700: db connection error:" + err)
       return
     } else {
-      var query = conn.query("SELECT * FROM KVtagandpicture WHERE id = ? ",[id],function(err,rows){
+      var query = conn.query("SELECT * FROM KVtagandpicture WHERE id = ? ",[id],function(err,rows){ // TODO: id ????
         if(err){
           console.log(err);
           return next("Database error, check your query");
         }
         res.status(200);
-        res.json(rows);
+        res.json({'data':rows});
       });
     }
   });
 });
-
-// tagandpicture single route (PUT)
-// =============================================================================
-var tagandpicture_single = router.route('/tagandpicture/:id');
-
-// tagandpicture count route
-// =============================================================================
-var tagandpicturecountroute = router.route('/tagandpicture/count/:id_game/:pattern');
-
-// GET number of tagandpictures from the DB that match the pattern
-// *****************************************************************************
-tagandpicturecountroute.get(function(req,res,next){
-  var id_game = req.params.id_game;
-  var pattern = req.params.pattern;
-
-  if(pattern == '<EMPTY>') {
-    pattern = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query(sprintf("SELECT count(*) as number FROM KVTagAndPicture WHERE id_game = %s and tag_name like '%s'",id_game,'%'+[pattern]+'%'),function(err,rows){
-        if(err){
-          console.log(err);
-          return next("Database error, check your query");
-        }
-        res.status(200);
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// Count route
-// =============================================================================
-var tagandpicturesliceroute = router.route('/tagandpicture/:offset/:limit/:id_game/:filter')
-
-// GET tagandpictures slice from the DB
-// *****************************************************************************
-tagandpicturesliceroute.get(function(req,res,next){
-  var id_game = req.params.id_game;
-  var offset = req.params.offset;
-  var limit = req.params.limit;
-  var filter = req.params.filter;
-
-  if(filter == '<EMPTY>') {
-    filter = '';
-  }
-
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'status':5001})
-      logError.error("500: " + err)
-      return
-    } else {
-      var query = conn.query(sprintf("SELECT * FROM KVTagAndPicture where id_game = %s and tag_name like '%s' limit %s offset %s",id_game,'%'+[filter]+'%',limit,offset),function(err,rows){
-        if(err){
-          console.log(err);
-          return next("Database error, check your query");
-        }
-        res.json(rows);
-      });
-    }
-  });
-});
-
-// single route (PUT)
-var tagandpicturesearchroute = router.route('/tagandpicture/search/:filters/:patterns');
-
-// GET single tagandpicture from the DB
-// =============================================================================
-tagandpicturesearchroute.get(function(req,res,next){
-  kautschSearch(req,res,next,'KTagAndPicture');
-});
-
 
 // =============================================================================
 // start Server
