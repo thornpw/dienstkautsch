@@ -1993,7 +1993,7 @@ object2mediatag.post(function(req,res,next){
 });
 
 // =============================================================================
-// File upload
+// Picture upload
 // =============================================================================
 
 var picture_upload = router.route('/picture/upload/:uuid')
