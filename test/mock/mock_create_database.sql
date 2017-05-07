@@ -12,7 +12,8 @@ CREATE TABLE KFile (
                      UNIQUE
                      NOT NULL,
     Name TEXT (256)  NOT NULL,
-    Path TEXT (1024) NOT NULL
+    Path TEXT (1024) NOT NULL,
+    Info TEXT (4096)
 );
 DROP TABLE IF EXISTS KGame;
 CREATE TABLE KGame (
@@ -51,7 +52,10 @@ CREATE TABLE KLink (
                      UNIQUE
                      NOT NULL,
     Name TEXT (256)  NOT NULL,
-    URL  TEXT (1024) NOT NULL
+    URL  TEXT (1024) NOT NULL,
+    Info TEXT (4096),
+    IsPicture BOOLEAN default 0,
+    IsVideo BOOLEAN default 0
 );
 DROP TABLE IF EXISTS KObject2MediaTag;
 CREATE TABLE KObject2MediaTag (
@@ -95,6 +99,7 @@ CREATE TABLE KPicture (
                         UNIQUE
                         NOT NULL,
     Name     TEXT (256) NOT NULL,
+    Info     TEXT (4096),
     FileUUID TEXT (64)  NOT NULL
                         UNIQUE
 );
@@ -159,12 +164,4 @@ CREATE TABLE KTranslation (
                         NOT NULL,
     English TEXT (1024) NOT NULL,
     Deutsch TEXT (1024)
-);
-DROP TABLE IF EXISTS KVideo;
-CREATE TABLE KVideo (
-    UID  TEXT (64)   PRIMARY KEY
-                     UNIQUE
-                     NOT NULL,
-    Name TEXT (256)  NOT NULL,
-    URL  TEXT (1024) NOT NULL
 );
