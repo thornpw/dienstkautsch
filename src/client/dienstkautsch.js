@@ -817,7 +817,7 @@ var database_single = router.route('/db/:type/:uid')
 database_single.get(function(req,res,next){
   var db_type = req.params.type
   var uid = req.params.uid
-  console.log(uid)
+  //console.log(uid)
 
   var query_string = sprintf("SELECT * FROM %s WHERE uid ='%s'",db_type,uid)
   db.all(query_string,function(err,rows) {
