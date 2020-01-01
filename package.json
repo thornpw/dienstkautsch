@@ -20,7 +20,7 @@
     "mysql": "^2.11.1",
     "sprintf": "^0.1.5",
     "sqlite3": "^4.0.9",
-    "superagent": "^2.3.0",
+    "superagent": "^5.0.2",
     "unit.js": "^2.0.0",
     "winston": "^2.3.1"
   },
