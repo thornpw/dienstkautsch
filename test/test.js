@@ -1,6 +1,7 @@
 var fs = require("fs")
 var Promise = require('es6-promise').Promise
-var MochaPromise = require("mocha-as-promised")();
+//var MochaPromise = require("mocha-as-promised")();
+var assert = require('assert');
 
 var db_file = "kautschbank2.sqlite";
 var sqlite3 = require("sqlite3").verbose();

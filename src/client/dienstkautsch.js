@@ -817,8 +817,9 @@ var database_single = router.route('/db/:type/:uid')
 database_single.get(function(req,res,next){
   var db_type = req.params.type
   var uid = req.params.uid
+  console.log(uid)
 
-  var query_string = sprintf("SELECT * FROM %s WHERE uid =%s",db_type,uid)
+  var query_string = sprintf("SELECT * FROM %s WHERE uid ='%s'",db_type,uid)
   db.all(query_string,function(err,rows) {
     try {
       if(err) {
@@ -871,44 +872,6 @@ database_single.get(function(req,res,next){
       }
     }
   });
-
-  /* MySQL
-     -----
-  req.getConnection(function(err,conn){
-    if (err) {
-      res.status(500)
-      res.json({'code':700,'errors':err})
-      logError.error("700: db connection error:" + err)
-      return
-    } else {
-      var query_string = sprintf("SELECT * FROM %s WHERE uid =%s",type,uid)
-      var query = conn.query(query_string,function(err,rows){
-        if(err){
-          if(err.errno==1146) {
-            res.status(400)
-            res.json({'code':415,'errors':err})
-            logError.warn("415: Object type unknown:" + type)
-          } else {
-            res.status(500)
-            res.json({'code':902,'errors':err})
-            logError.error("902: db select error:" + err)
-          }
-          return;
-        }
-
-        if(rows.length == 0) {
-          res.status(400)
-          res.json({'code':416,'errors':undefined})
-          logError.warn("416: Object not found:" + query_string)
-          return;
-        }
-
-        res.status(200)
-        res.json({'code':0,'data':rows,'errors':undefined})
-        logAccess.debug("200: " + query_string)
-      });
-    }
-  }); */
 });
 
 // generic delete
@@ -965,48 +928,6 @@ database_single.delete(function(req,res,next){
     logError.error("700: db connection error:" + err)
     return
   }
-
-  /* Mysql
-     -----
-  req.getConnection(function (err, conn) {
-    if (err) {
-      res.status(500)
-      res.json({'code':700,'errors':err})
-      logError.error("700: DB connection error:" + err)
-      return
-    } else {
-      var query_string = sprintf("Delete from %s where uid =%s",type,uid)
-      var query = conn.query(query_string, function(err, rows){
-        if(err){
-          if(err.errno==1146) {
-            res.status(400)
-            res.json({'code':300,'errors':err});
-            logError.warn("300: Object type unknown:" + type)
-          } else if(err.errno==1451) {
-            res.status(400)
-            res.json({'code':301,'errors':err});
-            logError.warn("301: FK relations to object exist:" + query_string)
-          } else {
-            res.status(500)
-            res.json({'code':904,'errors':err});
-            logError.error("904: DB delete error:" + err)
-          }
-          return;
-        }
-
-        if(rows.affectedRows == 0) {
-          res.status(400);
-          res.json({'code':302,'errors':undefined})
-          logError.warn("302: Object not found:" + query_string)
-          return;
-        }
-
-        res.status(200);
-        res.json({'code':0,'errors':undefined});
-        logAccess.debug("200: " + query_string)
-      });
-    }
-  });*/
 });
 
 // =============================================================================
@@ -1035,29 +956,6 @@ uuid.get(function(req,res,next){
   res.status(200);
   res.json({'code':0,'uuid':js_uuid,'errors':undefined});
   logAccess.debug("200: uuid:" + js_uuid)
-
-  /* mysql
-    ------
-  req.getConnection(function(err,conn){
-      console.log("get uuid")
-      if (err) {
-        res.status(500)
-        res.json({'code':700,'errors':err})
-        logError.error("700: db connection error:" + err)
-        return
-      } else {
-        console.log("no error get uuid")
-        var query = conn.query('SELECT uuid() as uuid',function(err,rows){
-          if(err){
-              console.log("Fehler:" + err);
-              return next("Database error, check your query");
-          }
-          res.json({'data':rows});
-          res.status(200).send();
-          return;
-       });
-     }
-  });*/
 });
 
 // =============================================================================
